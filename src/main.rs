@@ -17,7 +17,7 @@ use tss_esapi::{
         session_handles::{AuthSession, PolicySession},
     },
     structures::{
-        Auth, Digest, EccPoint, EccScheme, HashScheme, KeyDerivationFunctionScheme, MaxBuffer,
+        Digest, EccPoint, EccScheme, HashScheme, KeyDerivationFunctionScheme, MaxBuffer,
         PcrSelectionListBuilder, PcrSlot, Private, Public, PublicBuilder,
         PublicEccParametersBuilder, PublicKeyRsa, PublicRsaParametersBuilder, RsaExponent,
         RsaScheme, RsaSignature, Signature, SignatureScheme, SymmetricCipherParameters,
@@ -372,14 +372,7 @@ fn create_signing_handle(
     //let key_pub = create_signing_key_ecc(object_attributes, auth_digest);
 
     let (private, public) = context
-        .create(
-            primary_key_handle,
-            key_pub,
-            auth_digest.map(|d| Auth::try_from(d.value()).unwrap()),
-            None,
-            None,
-            None,
-        )
+        .create(primary_key_handle, key_pub, None, None, None, None)
         .map(|key| (key.out_private, key.out_public))
         .unwrap();
 
