@@ -141,9 +141,7 @@ fn load_external_signing_key(context: &mut Context) -> Result<KeyHandle, Error> 
         .with_rsa_unique_identifier(PublicKeyRsa::try_from(modulus)?)
         .build()?;
 
-    let policy_key_handle = context
-        .load_external_public(public_policy_key, Hierarchy::Owner)
-        .unwrap();
+    let policy_key_handle = context.load_external_public(public_policy_key, Hierarchy::Owner)?;
 
     Ok(policy_key_handle)
 }
