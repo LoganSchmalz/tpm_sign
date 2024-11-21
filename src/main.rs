@@ -192,12 +192,6 @@ fn run() -> Result<(), Error> {
         )?
         .0;
 
-    let auth_session = create_basic_auth_session(&mut context, SessionType::Hmac)?;
-    context.set_sessions((Some(auth_session), None, None));
-    let primary_key_handle = create_primary_handle(&mut context)?;
-    benchmark.push(("Primary", Instant::now()));
-    context.clear_sessions();
-
     let session = context
         .start_auth_session(
             None,
@@ -231,13 +225,15 @@ fn run() -> Result<(), Error> {
     let policy_auth_digest = context.policy_get_digest(session.try_into()?)?;
     println!("{:?}", policy_auth_digest);
 
-    context.set_sessions((Some(session), None, None));
-
+    let auth_session = create_basic_auth_session(&mut context, SessionType::Hmac)?;
+    context.set_sessions((Some(auth_session), None, None));
+    let primary_key_handle = create_primary_handle(&mut context)?;
+    benchmark.push(("Primary", Instant::now()));
     let public = Public::unmarshall(&read_file_to_buf("key.pub")?)?;
     let private = Private::try_from(read_file_to_buf("key.priv")?)?;
     let key_handle = context.load(primary_key_handle, private, public)?;
-
     benchmark.push(("Signing", Instant::now()));
+    context.clear_sessions();
 
     let msg = MaxBuffer::try_from("TPMs are cool.".repeat(73).as_bytes().to_vec())?;
 
@@ -247,8 +243,8 @@ fn run() -> Result<(), Error> {
         .unwrap();
     benchmark.push(("Hash", Instant::now()));
 
-    let signature = context
-        .sign(
+    let signature = context.execute_with_session(Some(session), |context| {
+        context.sign(
             key_handle,
             digest.clone(),
             SignatureScheme::RsaPss {
@@ -257,7 +253,7 @@ fn run() -> Result<(), Error> {
             },
             ticket,
         )
-        .unwrap();
+    })?;
     benchmark.push(("Sign", Instant::now()));
 
     // executing without a session is fastest and allowed for verifying
