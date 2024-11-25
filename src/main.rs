@@ -1,6 +1,7 @@
 use std::{
     fs::File,
     io::{Read, Write},
+    path::Path,
 };
 
 use picky_asn1_x509::SubjectPublicKeyInfo;
@@ -8,7 +9,7 @@ use tss_esapi::{
     abstraction::public::DecodedKey,
     attributes::{ObjectAttributes, ObjectAttributesBuilder, SessionAttributesBuilder},
     constants::SessionType,
-    handles::KeyHandle,
+    handles::{KeyHandle, ObjectHandle},
     interface_types::{
         algorithm::{HashingAlgorithm, PublicAlgorithm},
         ecc::EccCurve,
@@ -38,6 +39,7 @@ enum Error {
     Io(std::io::Error),
     Esapi(tss_esapi::Error),
     PickyAsn1Der(picky_asn1_der::Asn1DerError),
+    SerdeJson(serde_json::Error),
 }
 
 impl fmt::Display for Error {
@@ -46,6 +48,7 @@ impl fmt::Display for Error {
             Error::Io(ref e) => write!(f, "IO Error: {}", e),
             Error::Esapi(ref e) => write!(f, "ESAPI Error: {}", e),
             Error::PickyAsn1Der(ref e) => write!(f, "Picky ASN1 DER Error: {}", e),
+            Error::SerdeJson(ref e) => write!(f, "Serde Json Error: {}", e),
         }
     }
 }
@@ -56,6 +59,7 @@ impl error::Error for Error {
             Error::Io(ref e) => Some(e),
             Error::Esapi(ref e) => Some(e),
             Error::PickyAsn1Der(ref e) => Some(e),
+            Error::SerdeJson(ref e) => Some(e),
         }
     }
 }
@@ -75,6 +79,12 @@ impl From<tss_esapi::Error> for Error {
 impl From<picky_asn1_der::Asn1DerError> for Error {
     fn from(err: picky_asn1_der::Asn1DerError) -> Error {
         Error::PickyAsn1Der(err)
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(err: serde_json::Error) -> Error {
+        Error::SerdeJson(err)
     }
 }
 
@@ -179,7 +189,19 @@ fn run() -> Result<(), Error> {
     let policy_session: PolicySession = session.try_into()?;
     set_policy(&mut context, policy_session)?;
 
-    let policy_key_handle = load_external_signing_key(&mut context)?;
+    let policy_key_handle = if let Ok(key_handle) =
+        reload_key_context(&mut context, std::env::temp_dir().join("policy.ctx"))
+    {
+        key_handle
+    } else {
+        let policy_key_handle = load_external_signing_key(&mut context)?;
+        let _ = save_key_context(
+            &mut context,
+            policy_key_handle.into(),
+            std::env::temp_dir().join("policy.ctx"),
+        );
+        policy_key_handle
+    };
     let key_sign = context.tr_get_name(policy_key_handle.into())?;
     benchmark.push(("Policy Key", Instant::now()));
     let policy_signature = Signature::RsaSsa(RsaSignature::create(
@@ -274,7 +296,32 @@ fn set_policy(context: &mut Context, session: PolicySession) -> Result<(), Error
     Ok(())
 }
 
+fn reload_key_context<P: AsRef<Path>>(
+    context: &mut Context,
+    context_path: P,
+) -> Result<KeyHandle, Error> {
+    let buf = read_file_to_buf(context_path)?;
+    let ctx = serde_json::from_slice(&buf)?;
+    Ok(context.context_load(ctx)?.into())
+}
+
+fn save_key_context<P: AsRef<Path>>(
+    context: &mut Context,
+    handle: ObjectHandle,
+    path: P,
+) -> Result<(), Error> {
+    let policy_context = context.context_save(handle)?;
+    let mut policy_file = File::create(path)?;
+    let buf = serde_json::to_vec(&policy_context)?;
+    policy_file.write_all(&buf)?;
+    Ok(())
+}
+
 fn load_signing_key(context: &mut Context) -> Result<KeyHandle, Error> {
+    if let Ok(key_handle) = reload_key_context(context, std::env::temp_dir().join("signing.ctx")) {
+        return Ok(key_handle);
+    }
+
     let old_session_handles = context.sessions();
     let auth_session = create_basic_auth_session(context, SessionType::Hmac)?;
     context.set_sessions((Some(auth_session), None, None));
@@ -285,6 +332,13 @@ fn load_signing_key(context: &mut Context) -> Result<KeyHandle, Error> {
     // primary_key_handle is no longer necessary and keeping it loaded slows things down
     context.flush_context(primary_key_handle.into())?;
     context.set_sessions(old_session_handles);
+
+    let _ = save_key_context(
+        context,
+        key_handle.into(),
+        std::env::temp_dir().join("signing.ctx"),
+    );
+
     Ok(key_handle)
 }
 
@@ -474,7 +528,7 @@ fn create_public_der(public: Public, pub_der_path: &str) {
     pub_der.write_all(&buf).unwrap();
 }
 
-fn read_file_to_buf(path: &str) -> Result<Vec<u8>, std::io::Error> {
+fn read_file_to_buf<P: AsRef<Path>>(path: P) -> Result<Vec<u8>, std::io::Error> {
     let mut file = File::open(path)?;
     let mut buf = Vec::new();
     let _ = file.read_to_end(&mut buf)?;
