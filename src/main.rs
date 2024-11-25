@@ -171,27 +171,6 @@ fn run() -> Result<(), Error> {
         context.verify_signature(policy_key_handle, policy_digest, policy_signature)?;
     benchmark.push(("Policy Verified", Instant::now()));
 
-    let pcr_selection_list = PcrSelectionListBuilder::new()
-        .with_selection(HashingAlgorithm::Sha256, &[PcrSlot::Slot0])
-        .build()?;
-
-    let (_update_counter, _pcr_list_out, pcr_digests) =
-        context.pcr_read(pcr_selection_list.clone())?;
-    let concatenated_pcr_values = pcr_digests
-        .value()
-        .iter()
-        .map(|v| v.value())
-        .collect::<Vec<&[u8]>>()
-        .concat();
-    println!("{:?}", pcr_digests);
-    let hashed_pcrs = context
-        .hash(
-            MaxBuffer::try_from(concatenated_pcr_values.to_vec())?,
-            HashingAlgorithm::Sha256,
-            Hierarchy::Null,
-        )?
-        .0;
-
     let session = context
         .start_auth_session(
             None,
@@ -208,10 +187,7 @@ fn run() -> Result<(), Error> {
         .build();
     context.tr_sess_set_attributes(session, session_attributes, session_attributes_mask)?;
     let policy_session: PolicySession = session.try_into()?;
-
-    context.policy_pcr(policy_session, hashed_pcrs, pcr_selection_list.clone())?;
-    let digest = context.policy_get_digest(policy_session)?;
-    println!("{:?}", digest);
+    set_policy(&mut context, policy_session)?;
 
     let approved_policy = Digest::try_from(read_file_to_buf("policy/pcr.policy_desired")?)?;
     context.policy_authorize(
@@ -221,9 +197,8 @@ fn run() -> Result<(), Error> {
         &key_sign,
         check_ticket,
     )?;
-
-    let policy_auth_digest = context.policy_get_digest(session.try_into()?)?;
-    println!("{:?}", policy_auth_digest);
+    //let policy_auth_digest = context.policy_get_digest(policy_session)?;
+    //println!("{:?}", policy_auth_digest);
 
     let auth_session = create_basic_auth_session(&mut context, SessionType::Hmac)?;
     context.set_sessions((Some(auth_session), None, None));
@@ -271,6 +246,33 @@ fn run() -> Result<(), Error> {
     eprintln!("{:?}", benchmark[benchmark.len() - 1].1 - benchmark[0].1);
 
     assert!(verified_data.is_ok());
+
+    Ok(())
+}
+
+fn set_policy(context: &mut Context, session: PolicySession) -> Result<(), Error> {
+    let pcr_selection_list = PcrSelectionListBuilder::new()
+        .with_selection(HashingAlgorithm::Sha256, &[PcrSlot::Slot0])
+        .build()?;
+
+    let (_update_counter, _pcr_list_out, pcr_digests) =
+        context.pcr_read(pcr_selection_list.clone())?;
+    let concatenated_pcr_values = pcr_digests
+        .value()
+        .iter()
+        .map(|v| v.value())
+        .collect::<Vec<&[u8]>>()
+        .concat();
+
+    let hashed_pcrs = context
+        .hash(
+            MaxBuffer::try_from(concatenated_pcr_values.to_vec())?,
+            HashingAlgorithm::Sha256,
+            Hierarchy::Null,
+        )?
+        .0;
+
+    context.policy_pcr(session, hashed_pcrs, pcr_selection_list.clone())?;
 
     Ok(())
 }
