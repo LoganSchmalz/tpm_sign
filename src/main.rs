@@ -199,16 +199,7 @@ fn run() -> Result<(), Error> {
     )?;
     //let policy_auth_digest = context.policy_get_digest(policy_session)?;
     //println!("{:?}", policy_auth_digest);
-
-    let auth_session = create_basic_auth_session(&mut context, SessionType::Hmac)?;
-    context.set_sessions((Some(auth_session), None, None));
-    let primary_key_handle = create_primary_handle(&mut context)?;
-    benchmark.push(("Primary", Instant::now()));
-    let public = Public::unmarshall(&read_file_to_buf("key.pub")?)?;
-    let private = Private::try_from(read_file_to_buf("key.priv")?)?;
-    let key_handle = context.load(primary_key_handle, private, public)?;
-    benchmark.push(("Signing", Instant::now()));
-    context.clear_sessions();
+    benchmark.push(("Policy Set", Instant::now()));
 
     let msg = MaxBuffer::try_from("TPMs are cool.".repeat(73).as_bytes().to_vec())?;
 
@@ -217,6 +208,9 @@ fn run() -> Result<(), Error> {
         .execute_without_session(|ctx| ctx.hash(msg, HashingAlgorithm::Sha256, Hierarchy::Owner))
         .unwrap();
     benchmark.push(("Hash", Instant::now()));
+
+    let key_handle = load_signing_key(&mut context)?;
+    benchmark.push(("Signing", Instant::now()));
 
     let signature = context.execute_with_session(Some(session), |context| {
         context.sign(
@@ -275,6 +269,19 @@ fn set_policy(context: &mut Context, session: PolicySession) -> Result<(), Error
     context.policy_pcr(session, hashed_pcrs, pcr_selection_list.clone())?;
 
     Ok(())
+}
+
+fn load_signing_key(context: &mut Context) -> Result<KeyHandle, Error> {
+    let old_session_handles = context.sessions();
+    let auth_session = create_basic_auth_session(context, SessionType::Hmac)?;
+    context.set_sessions((Some(auth_session), None, None));
+    let primary_key_handle = create_primary_handle(context)?;
+    let public = Public::unmarshall(&read_file_to_buf("key.pub")?)?;
+    let private = Private::try_from(read_file_to_buf("key.priv")?)?;
+    let key_handle = context.load(primary_key_handle, private, public)?;
+    context.flush_context(primary_key_handle.into())?;
+    context.set_sessions(old_session_handles);
+    Ok(key_handle)
 }
 
 fn create_basic_auth_session(
