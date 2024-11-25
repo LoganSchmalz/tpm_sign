@@ -151,9 +151,6 @@ fn run() -> Result<(), Error> {
     let mut context = Context::new(TctiNameConf::from_environment_variable()?)?;
     benchmark.push(("Context", Instant::now()));
 
-    let policy_key_handle = load_external_signing_key(&mut context)?;
-    let key_sign = context.tr_get_name(policy_key_handle.into()).unwrap();
-    benchmark.push(("Policy Key", Instant::now()));
     let approved_policy = Digest::try_from(read_file_to_buf("policy/pcr.policy_desired")?)?;
     let policy_digest = context
         .hash(
@@ -163,13 +160,6 @@ fn run() -> Result<(), Error> {
         )?
         .0;
     benchmark.push(("Policy Digest", Instant::now()));
-    let policy_signature = Signature::RsaSsa(RsaSignature::create(
-        HashingAlgorithm::Sha256,
-        PublicKeyRsa::try_from(read_file_to_buf("policy/pcr.signature")?)?,
-    )?);
-    let check_ticket =
-        context.verify_signature(policy_key_handle, policy_digest, policy_signature)?;
-    benchmark.push(("Policy Verified", Instant::now()));
 
     let session = context
         .start_auth_session(
@@ -188,6 +178,19 @@ fn run() -> Result<(), Error> {
     context.tr_sess_set_attributes(session, session_attributes, session_attributes_mask)?;
     let policy_session: PolicySession = session.try_into()?;
     set_policy(&mut context, policy_session)?;
+
+    let policy_key_handle = load_external_signing_key(&mut context)?;
+    let key_sign = context.tr_get_name(policy_key_handle.into())?;
+    benchmark.push(("Policy Key", Instant::now()));
+    let policy_signature = Signature::RsaSsa(RsaSignature::create(
+        HashingAlgorithm::Sha256,
+        PublicKeyRsa::try_from(read_file_to_buf("policy/pcr.signature")?)?,
+    )?);
+    let check_ticket =
+        context.verify_signature(policy_key_handle, policy_digest, policy_signature)?;
+    benchmark.push(("Policy Verified", Instant::now()));
+    // policy_key_handle is no longer necessary and keeping it loaded slows things down
+    context.flush_context(policy_key_handle.into())?;
 
     let approved_policy = Digest::try_from(read_file_to_buf("policy/pcr.policy_desired")?)?;
     context.policy_authorize(
@@ -210,7 +213,7 @@ fn run() -> Result<(), Error> {
     benchmark.push(("Hash", Instant::now()));
 
     let key_handle = load_signing_key(&mut context)?;
-    benchmark.push(("Signing", Instant::now()));
+    benchmark.push(("Signing Key", Instant::now()));
 
     let signature = context.execute_with_session(Some(session), |context| {
         context.sign(
@@ -279,6 +282,7 @@ fn load_signing_key(context: &mut Context) -> Result<KeyHandle, Error> {
     let public = Public::unmarshall(&read_file_to_buf("key.pub")?)?;
     let private = Private::try_from(read_file_to_buf("key.priv")?)?;
     let key_handle = context.load(primary_key_handle, private, public)?;
+    // primary_key_handle is no longer necessary and keeping it loaded slows things down
     context.flush_context(primary_key_handle.into())?;
     context.set_sessions(old_session_handles);
     Ok(key_handle)
@@ -294,7 +298,6 @@ fn create_basic_auth_session(
         None,
         session_type,
         SymmetricDefinition::AES_128_CFB,
-        //HashingAlgorithm::Sha256,
         HashingAlgorithm::Sha256,
     )?;
     if let Some(auth_session) = auth_session {
