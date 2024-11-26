@@ -232,8 +232,9 @@ fn run() -> Result<(), Error> {
     let msg = MaxBuffer::try_from("TPMs are cool.".repeat(73).as_bytes().to_vec())?;
 
     // executing without a session is fastest and allowed for hashing
-    let (digest, ticket) = context
-        .execute_without_session(|ctx| ctx.hash(msg, HashingAlgorithm::Sha256, Hierarchy::Owner))?;
+    let (digest, ticket) = context.execute_without_session(|ctx| {
+        ctx.hash(msg.clone(), HashingAlgorithm::Sha256, Hierarchy::Owner)
+    })?;
     benchmark.push(("Hash", Instant::now()));
 
     let key_handle = load_signing_key(&mut context)?;
@@ -253,9 +254,29 @@ fn run() -> Result<(), Error> {
     benchmark.push(("Sign", Instant::now()));
 
     // executing without a session is fastest and allowed for verifying
-    let verified_data =
-        context.execute_without_session(|ctx| ctx.verify_signature(key_handle, digest, signature));
+    let verified_data = context
+        .execute_without_session(|ctx| ctx.verify_signature(key_handle, digest, signature.clone()));
     benchmark.push(("Verify", Instant::now()));
+
+    {
+        #![expect(clippy::unwrap_used)]
+        #![expect(clippy::panic)]
+        let pkey = openssl::pkey::PKey::public_key_from_der(&fs::read("key.der")?).unwrap();
+        let signature = match signature {
+            Signature::RsaSsa(sig) | Signature::RsaPss(sig) => sig.signature().value().to_vec(),
+            _ => {
+                panic!("really bad");
+            }
+        };
+        let mut verifier =
+            openssl::sign::Verifier::new(openssl::hash::MessageDigest::sha256(), &pkey).unwrap();
+        verifier
+            .set_rsa_padding(openssl::rsa::Padding::PKCS1_PSS)
+            .unwrap();
+        let res = verifier.verify_oneshot(&signature, msg.value()).unwrap();
+        println!("{res}");
+        assert!(res);
+    }
 
     for i in 1..benchmark.len() {
         eprintln!(
