@@ -3,6 +3,18 @@ name = "tpm_sign"
 version = "0.1.0"
 edition = "2021"
 
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+allow_attributes = "warn"
+expect_used = "deny"
+panic = "deny"
+unwrap_used = "deny"
+indexing_slicing = "warn"
+as_conversions = "warn"
+arithmetic_side_effects = "warn"
+
 [dependencies]
 picky-asn1-der = "0.5.0"
 picky-asn1-x509 = "=0.12.0"

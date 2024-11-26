@@ -1,6 +1,7 @@
 use std::{
-    fs::File,
-    io::{Read, Write},
+    fs::{self, File},
+    io,
+    io::Write,
     path::Path,
 };
 
@@ -18,7 +19,7 @@ use tss_esapi::{
         session_handles::{AuthSession, PolicySession},
     },
     structures::{
-        Digest, EccPoint, EccScheme, HashScheme, KeyDerivationFunctionScheme, MaxBuffer,
+        Digest, EccPoint, EccScheme, HashScheme, KeyDerivationFunctionScheme, MaxBuffer, Nonce,
         PcrSelectionListBuilder, PcrSlot, Private, Public, PublicBuilder,
         PublicEccParametersBuilder, PublicKeyRsa, PublicRsaParametersBuilder, RsaExponent,
         RsaScheme, RsaSignature, Signature, SignatureScheme, SymmetricCipherParameters,
@@ -36,7 +37,7 @@ use std::time::Instant;
 
 #[derive(Debug)]
 enum Error {
-    Io(std::io::Error),
+    Io(io::Error),
     Esapi(tss_esapi::Error),
     PickyAsn1Der(picky_asn1_der::Asn1DerError),
     SerdeJson(serde_json::Error),
@@ -45,10 +46,10 @@ enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Error::Io(ref e) => write!(f, "IO Error: {}", e),
-            Error::Esapi(ref e) => write!(f, "ESAPI Error: {}", e),
-            Error::PickyAsn1Der(ref e) => write!(f, "Picky ASN1 DER Error: {}", e),
-            Error::SerdeJson(ref e) => write!(f, "Serde Json Error: {}", e),
+            Self::Io(ref e) => write!(f, "IO Error: {e}"),
+            Self::Esapi(ref e) => write!(f, "ESAPI Error: {e}"),
+            Self::PickyAsn1Der(ref e) => write!(f, "Picky ASN1 DER Error: {e}"),
+            Self::SerdeJson(ref e) => write!(f, "Serde Json Error: {e}"),
         }
     }
 }
@@ -56,35 +57,35 @@ impl fmt::Display for Error {
 impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match *self {
-            Error::Io(ref e) => Some(e),
-            Error::Esapi(ref e) => Some(e),
-            Error::PickyAsn1Der(ref e) => Some(e),
-            Error::SerdeJson(ref e) => Some(e),
+            Self::Io(ref e) => Some(e),
+            Self::Esapi(ref e) => Some(e),
+            Self::PickyAsn1Der(ref e) => Some(e),
+            Self::SerdeJson(ref e) => Some(e),
         }
     }
 }
 
-impl From<std::io::Error> for Error {
-    fn from(err: std::io::Error) -> Error {
-        Error::Io(err)
+impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Self {
+        Self::Io(err)
     }
 }
 
 impl From<tss_esapi::Error> for Error {
-    fn from(err: tss_esapi::Error) -> Error {
-        Error::Esapi(err)
+    fn from(err: tss_esapi::Error) -> Self {
+        Self::Esapi(err)
     }
 }
 
 impl From<picky_asn1_der::Asn1DerError> for Error {
-    fn from(err: picky_asn1_der::Asn1DerError) -> Error {
-        Error::PickyAsn1Der(err)
+    fn from(err: picky_asn1_der::Asn1DerError) -> Self {
+        Self::PickyAsn1Der(err)
     }
 }
 
 impl From<serde_json::Error> for Error {
-    fn from(err: serde_json::Error) -> Error {
-        Error::SerdeJson(err)
+    fn from(err: serde_json::Error) -> Self {
+        Self::SerdeJson(err)
     }
 }
 
@@ -96,7 +97,7 @@ fn provision(auth_digest_path: Option<&str>) -> Result<(), Error> {
     let primary_key_handle = create_primary_handle(&mut context)?;
 
     let auth_digest = auth_digest_path
-        .map(read_file_to_buf)
+        .map(fs::read)
         .transpose()?
         .map(Digest::try_from)
         .transpose()?;
@@ -114,13 +115,13 @@ fn provision(auth_digest_path: Option<&str>) -> Result<(), Error> {
 }
 
 fn dump_public_key() -> Result<(), Error> {
-    let public = Public::unmarshall(&read_file_to_buf("key.pub")?)?;
+    let public = Public::unmarshall(&fs::read("key.pub")?)?;
     create_public_der(public, "key.der");
     Ok(())
 }
 
 fn load_external_signing_key(context: &mut Context) -> Result<KeyHandle, Error> {
-    let der = read_file_to_buf("policy/policy_key.der")?;
+    let der = fs::read("policy/policy_key.der")?;
     let key: picky_asn1_x509::RsaPublicKey = picky_asn1_der::from_bytes(&der)?;
     let modulus = key.modulus.as_unsigned_bytes_be();
     let exponent = key
@@ -128,7 +129,7 @@ fn load_external_signing_key(context: &mut Context) -> Result<KeyHandle, Error> 
         .as_unsigned_bytes_be()
         .iter()
         .enumerate()
-        .fold(0u32, |v, (i, &x)| v + ((x as u32) << (8 * i as u32)));
+        .fold(0u32, |v, (i, &x)| v + (u32::from(x) << (8 * i as u32)));
 
     let public_policy_key = PublicBuilder::new()
         .with_public_algorithm(PublicAlgorithm::Rsa)
@@ -156,12 +157,13 @@ fn load_external_signing_key(context: &mut Context) -> Result<KeyHandle, Error> 
     Ok(policy_key_handle)
 }
 
+#[deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 fn run() -> Result<(), Error> {
     let mut benchmark = vec![("", Instant::now())];
     let mut context = Context::new(TctiNameConf::from_environment_variable()?)?;
     benchmark.push(("Context", Instant::now()));
 
-    let approved_policy = Digest::try_from(read_file_to_buf("policy/pcr.policy_desired")?)?;
+    let approved_policy = Digest::try_from(fs::read("policy/pcr.policy_desired")?)?;
     let policy_digest = context
         .hash(
             MaxBuffer::try_from(approved_policy.value())?,
@@ -180,7 +182,9 @@ fn run() -> Result<(), Error> {
             SymmetricDefinition::AES_128_CFB,
             HashingAlgorithm::Sha256,
         )?
-        .unwrap(); // TODO: fix unwrap here
+        .ok_or(tss_esapi::Error::WrapperError(
+            tss_esapi::WrapperErrorKind::WrongValueFromTpm,
+        ))?;
     let (session_attributes, session_attributes_mask) = SessionAttributesBuilder::new()
         .with_decrypt(true)
         .with_encrypt(true)
@@ -190,7 +194,7 @@ fn run() -> Result<(), Error> {
     set_policy(&mut context, policy_session)?;
 
     let policy_key_handle = if let Ok(key_handle) =
-        reload_key_context(&mut context, std::env::temp_dir().join("policy.ctx"))
+        reload_key_context(&mut context, env::temp_dir().join("policy.ctx"))
     {
         key_handle
     } else {
@@ -198,7 +202,7 @@ fn run() -> Result<(), Error> {
         let _ = save_key_context(
             &mut context,
             policy_key_handle.into(),
-            std::env::temp_dir().join("policy.ctx"),
+            env::temp_dir().join("policy.ctx"),
         );
         policy_key_handle
     };
@@ -206,7 +210,7 @@ fn run() -> Result<(), Error> {
     benchmark.push(("Policy Key", Instant::now()));
     let policy_signature = Signature::RsaSsa(RsaSignature::create(
         HashingAlgorithm::Sha256,
-        PublicKeyRsa::try_from(read_file_to_buf("policy/pcr.signature")?)?,
+        PublicKeyRsa::try_from(fs::read("policy/pcr.signature")?)?,
     )?);
     let check_ticket =
         context.verify_signature(policy_key_handle, policy_digest, policy_signature)?;
@@ -214,11 +218,10 @@ fn run() -> Result<(), Error> {
     // policy_key_handle is no longer necessary and keeping it loaded slows things down
     context.flush_context(policy_key_handle.into())?;
 
-    let approved_policy = Digest::try_from(read_file_to_buf("policy/pcr.policy_desired")?)?;
     context.policy_authorize(
         policy_session,
         approved_policy,
-        Default::default(),
+        Nonce::default(),
         &key_sign,
         check_ticket,
     )?;
@@ -230,8 +233,7 @@ fn run() -> Result<(), Error> {
 
     // executing without a session is fastest and allowed for hashing
     let (digest, ticket) = context
-        .execute_without_session(|ctx| ctx.hash(msg, HashingAlgorithm::Sha256, Hierarchy::Owner))
-        .unwrap();
+        .execute_without_session(|ctx| ctx.hash(msg, HashingAlgorithm::Sha256, Hierarchy::Owner))?;
     benchmark.push(("Hash", Instant::now()));
 
     let key_handle = load_signing_key(&mut context)?;
@@ -279,19 +281,19 @@ fn set_policy(context: &mut Context, session: PolicySession) -> Result<(), Error
     let concatenated_pcr_values = pcr_digests
         .value()
         .iter()
-        .map(|v| v.value())
+        .map(Digest::value)
         .collect::<Vec<&[u8]>>()
         .concat();
 
     let hashed_pcrs = context
         .hash(
-            MaxBuffer::try_from(concatenated_pcr_values.to_vec())?,
+            MaxBuffer::try_from(concatenated_pcr_values)?,
             HashingAlgorithm::Sha256,
             Hierarchy::Null,
         )?
         .0;
 
-    context.policy_pcr(session, hashed_pcrs, pcr_selection_list.clone())?;
+    context.policy_pcr(session, hashed_pcrs, pcr_selection_list)?;
 
     Ok(())
 }
@@ -300,7 +302,7 @@ fn reload_key_context<P: AsRef<Path>>(
     context: &mut Context,
     context_path: P,
 ) -> Result<KeyHandle, Error> {
-    let buf = read_file_to_buf(context_path)?;
+    let buf = fs::read(context_path)?;
     let ctx = serde_json::from_slice(&buf)?;
     Ok(context.context_load(ctx)?.into())
 }
@@ -311,14 +313,12 @@ fn save_key_context<P: AsRef<Path>>(
     path: P,
 ) -> Result<(), Error> {
     let policy_context = context.context_save(handle)?;
-    let mut policy_file = File::create(path)?;
-    let buf = serde_json::to_vec(&policy_context)?;
-    policy_file.write_all(&buf)?;
+    fs::write(path, serde_json::to_vec(&policy_context)?)?;
     Ok(())
 }
 
 fn load_signing_key(context: &mut Context) -> Result<KeyHandle, Error> {
-    if let Ok(key_handle) = reload_key_context(context, std::env::temp_dir().join("signing.ctx")) {
+    if let Ok(key_handle) = reload_key_context(context, env::temp_dir().join("signing.ctx")) {
         return Ok(key_handle);
     }
 
@@ -326,8 +326,8 @@ fn load_signing_key(context: &mut Context) -> Result<KeyHandle, Error> {
     let auth_session = create_basic_auth_session(context, SessionType::Hmac)?;
     context.set_sessions((Some(auth_session), None, None));
     let primary_key_handle = create_primary_handle(context)?;
-    let public = Public::unmarshall(&read_file_to_buf("key.pub")?)?;
-    let private = Private::try_from(read_file_to_buf("key.priv")?)?;
+    let public = Public::unmarshall(&fs::read("key.pub")?)?;
+    let private = Private::try_from(fs::read("key.priv")?)?;
     let key_handle = context.load(primary_key_handle, private, public)?;
     // primary_key_handle is no longer necessary and keeping it loaded slows things down
     context.flush_context(primary_key_handle.into())?;
@@ -336,7 +336,7 @@ fn load_signing_key(context: &mut Context) -> Result<KeyHandle, Error> {
     let _ = save_key_context(
         context,
         key_handle.into(),
-        std::env::temp_dir().join("signing.ctx"),
+        env::temp_dir().join("signing.ctx"),
     );
 
     Ok(key_handle)
@@ -346,28 +346,25 @@ fn create_basic_auth_session(
     context: &mut Context,
     session_type: SessionType,
 ) -> Result<AuthSession, Error> {
-    let auth_session = context.start_auth_session(
-        None,
-        None,
-        None,
-        session_type,
-        SymmetricDefinition::AES_128_CFB,
-        HashingAlgorithm::Sha256,
-    )?;
-    if let Some(auth_session) = auth_session {
-        let (session_attributes, session_attributes_mask) = SessionAttributesBuilder::new()
-            .with_decrypt(true)
-            .with_encrypt(true)
-            .build();
-        context.tr_sess_set_attributes(
-            auth_session,
-            session_attributes,
-            session_attributes_mask,
-        )?;
-    }
-    // TODO: potential bad case when context.start_auth_session returns None
+    let auth_session = context
+        .start_auth_session(
+            None,
+            None,
+            None,
+            session_type,
+            SymmetricDefinition::AES_128_CFB,
+            HashingAlgorithm::Sha256,
+        )?
+        .ok_or(tss_esapi::Error::WrapperError(
+            tss_esapi::WrapperErrorKind::WrongValueFromTpm,
+        ))?;
+    let (session_attributes, session_attributes_mask) = SessionAttributesBuilder::new()
+        .with_decrypt(true)
+        .with_encrypt(true)
+        .build();
+    context.tr_sess_set_attributes(auth_session, session_attributes, session_attributes_mask)?;
 
-    Ok(auth_session.unwrap())
+    Ok(auth_session)
 }
 
 fn create_primary_handle(context: &mut Context) -> Result<KeyHandle, Error> {
@@ -403,17 +400,13 @@ fn create_signing_handle(
     priv_key_path: &str,
     auth_digest: Option<Digest>,
 ) -> (KeyHandle, Public) {
+    #![expect(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+
     let mut pub_file = File::create_new(pub_key_path).unwrap_or_else(|_| {
-        panic!(
-            "Error: Public key file {} already exists, not reprovisioning",
-            pub_key_path
-        )
+        panic!("Error: Public key file {pub_key_path} already exists, not reprovisioning",)
     });
     let mut priv_file = File::create_new(priv_key_path).unwrap_or_else(|_| {
-        panic!(
-            "Error: Private key file {} already exists, not reprovisioning",
-            priv_key_path
-        )
+        panic!("Error: Private key file {priv_key_path} already exists, not reprovisioning",)
     });
 
     let object_attributes = ObjectAttributesBuilder::new()
@@ -428,7 +421,7 @@ fn create_signing_handle(
         .build()
         .expect("Failed to build object attributes");
 
-    let key_pub = create_signing_key_rsa(object_attributes, auth_digest.clone()).unwrap();
+    let key_pub = create_signing_key_rsa(object_attributes, auth_digest).unwrap();
     //let key_pub = create_signing_key_ecc(object_attributes, auth_digest);
 
     let (private, public) = context
@@ -446,11 +439,11 @@ fn create_signing_handle(
     (key_handle, public)
 }
 
-#[allow(dead_code)]
 fn create_signing_key_rsa(
     object_attributes: ObjectAttributes,
     auth_digest: Option<Digest>,
 ) -> Result<Public, Error> {
+    #![allow(dead_code)]
     let rsa_params = PublicRsaParametersBuilder::new()
         .with_scheme(RsaScheme::RsaPss(HashScheme::new(HashingAlgorithm::Sha256)))
         .with_key_bits(RsaKeyBits::Rsa2048)
@@ -468,7 +461,7 @@ fn create_signing_key_rsa(
         .with_rsa_parameters(rsa_params)
         .with_rsa_unique_identifier(PublicKeyRsa::default());
     let public_builder = if let Some(digest) = auth_digest {
-        println!("Auth digest required: {:?}", digest);
+        //println!("Auth digest required: {:?}", digest);
         public_builder.with_auth_policy(digest)
     } else {
         public_builder
@@ -476,11 +469,11 @@ fn create_signing_key_rsa(
     Ok(public_builder.build()?)
 }
 
-#[allow(dead_code)]
 fn create_signing_key_ecc(
     object_attributes: ObjectAttributes,
     auth_digest: Option<Digest>,
 ) -> Result<Public, Error> {
+    #![allow(dead_code)]
     let ecc_params = PublicEccParametersBuilder::new()
         .with_ecc_scheme(EccScheme::EcDsa(HashScheme::new(HashingAlgorithm::Sha256)))
         .with_curve(EccCurve::NistP384)
@@ -505,11 +498,9 @@ fn create_signing_key_ecc(
 }
 
 fn create_public_der(public: Public, pub_der_path: &str) {
+    #![expect(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
     let mut pub_der = File::create_new(pub_der_path).unwrap_or_else(|_| {
-        panic!(
-            "Error: Public key DER file {} already exists, not overwriting",
-            pub_der_path
-        )
+        panic!("Error: Public key DER file {pub_der_path} already exists, not overwriting",)
     });
     let decoded_key =
         DecodedKey::try_from(public).expect("Failed to convert Public structure to DecodedKey");
@@ -528,18 +519,12 @@ fn create_public_der(public: Public, pub_der_path: &str) {
     pub_der.write_all(&buf).unwrap();
 }
 
-fn read_file_to_buf<P: AsRef<Path>>(path: P) -> Result<Vec<u8>, std::io::Error> {
-    let mut file = File::open(path)?;
-    let mut buf = Vec::new();
-    let _ = file.read_to_end(&mut buf)?;
-    Ok(buf)
-}
-
 fn main() -> Result<(), Error> {
+    #![expect(clippy::panic, clippy::unwrap_used)]
     let args: Vec<String> = env::args().skip(1).collect();
     match args.len() {
         0 => run(),
-        1 => match args[0].as_str() {
+        1 => match args.first().unwrap().as_str() {
             //"provision" => provision(None),
             "provision" => provision(Some("policy/authorized.policy")),
             "public_key" => dump_public_key(),
