@@ -3,7 +3,7 @@
 mkdir -p policy
 cd policy
 # generate OpenSSL key (don't make a new key if one already exists)
-if [ -e signing_key_private.pem ]
+if [ ! -f signing_key_private.pem ]
 then
 	openssl genrsa -out signing_key_private.pem 2048
 	openssl rsa -in signing_key_private.pem -out signing_key_public.pem -pubout
