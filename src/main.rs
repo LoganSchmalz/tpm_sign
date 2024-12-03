@@ -31,7 +31,7 @@ enum Error {
     Slicing,
     Io(io::Error),
     Esapi(tss_esapi::Error),
-    PickyAsn1Der(picky_asn1_der::Asn1DerError),
+    OpenSsl(openssl::error::ErrorStack),
     SerdeJson(serde_json::Error),
 }
 
@@ -41,7 +41,7 @@ impl fmt::Display for Error {
             Self::Slicing => write!(f, "Slicing Error"),
             Self::Io(ref e) => write!(f, "IO Error: {e}"),
             Self::Esapi(ref e) => write!(f, "ESAPI Error: {e}"),
-            Self::PickyAsn1Der(ref e) => write!(f, "Picky ASN1 DER Error: {e}"),
+            Self::OpenSsl(ref e) => write!(f, "OpenSSL Error: {e}"),
             Self::SerdeJson(ref e) => write!(f, "Serde Json Error: {e}"),
         }
     }
@@ -53,7 +53,7 @@ impl error::Error for Error {
             Self::Slicing => None,
             Self::Io(ref e) => Some(e),
             Self::Esapi(ref e) => Some(e),
-            Self::PickyAsn1Der(ref e) => Some(e),
+            Self::OpenSsl(ref e) => Some(e),
             Self::SerdeJson(ref e) => Some(e),
         }
     }
@@ -71,9 +71,9 @@ impl From<tss_esapi::Error> for Error {
     }
 }
 
-impl From<picky_asn1_der::Asn1DerError> for Error {
-    fn from(err: picky_asn1_der::Asn1DerError) -> Self {
-        Self::PickyAsn1Der(err)
+impl From<openssl::error::ErrorStack> for Error {
+    fn from(err: openssl::error::ErrorStack) -> Self {
+        Self::OpenSsl(err)
     }
 }
 
@@ -84,12 +84,12 @@ impl From<serde_json::Error> for Error {
 }
 
 fn load_external_signing_key(context: &mut Context) -> Result<KeyHandle, Error> {
-    let der = fs::read("policy/policy_key.der")?;
-    let key: picky_asn1_x509::RsaPublicKey = picky_asn1_der::from_bytes(&der)?;
-    let modulus = key.modulus.as_unsigned_bytes_be();
+    let der = fs::read("policy/policy_key.pem")?;
+    let key = openssl::rsa::Rsa::public_key_from_pem(&der)?;
+    let modulus = key.n().to_vec();
     let exponent = key
-        .public_exponent
-        .as_unsigned_bytes_be()
+        .e()
+        .to_vec()
         .iter()
         .enumerate()
         .fold(0u32, |v, (i, &x)| v + (u32::from(x) << (8 * i as u32)));
@@ -172,9 +172,9 @@ fn run(use_key_context: bool) -> Result<(), Error> {
     } else {
         load_external_signing_key(&mut context)?
     };
-
     let key_sign = context.tr_get_name(policy_key_handle.into())?;
     benchmark.push(("Policy Key", Instant::now()));
+
     let policy_signature = Signature::RsaSsa(RsaSignature::create(
         HashingAlgorithm::Sha256,
         PublicKeyRsa::try_from(fs::read("policy/pcr.signature")?)?,
