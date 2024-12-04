@@ -15,6 +15,6 @@ then
 fi
 
 tpm2_createprimary -C o -g sha256 -G aes128cfb -c prim.ctx
-tpm2_create -u key.pub -r key.priv -g sha256 -G "rsa2048:rsapss:null" -a "restricted|sign|fixedtpm|fixedparent|sensitivedataorigin" -C prim.ctx -c signing.ctx -L policy/authorized.policy
+tpm2_create -u key.pub -r key.priv -g sha256 -G "rsa2048:rsapss:null" -a "sign|fixedtpm|fixedparent|sensitivedataorigin" -C prim.ctx -c signing.ctx -L policy/authorized.policy
 tpm2_readpublic -c signing.ctx -o key.pem --format=pem
 rm prim.ctx signing.ctx
