@@ -131,7 +131,7 @@ fn run(use_key_context: bool) -> Result<(), Error> {
     benchmark.push(("Context", Instant::now()));
 
     let approved_policy = Digest::try_from(fs::read("policy/pcr.policy_desired")?)?;
-    let policy_digest = Digest::try_from(openssl::sha::sha256(&approved_policy).to_vec())?;
+    let policy_digest = Digest::try_from(&openssl::sha::sha256(&approved_policy)[..])?;
     benchmark.push(("Policy Digest", Instant::now()));
 
     let session = context
@@ -200,8 +200,7 @@ fn run(use_key_context: bool) -> Result<(), Error> {
     //let (digest, ticket) = context.execute_without_session(|ctx| {
     //    ctx.hash(msg.clone(), HashingAlgorithm::Sha256, Hierarchy::Owner)
     //})?;
-    let digest = openssl::sha::sha256(&msg).to_vec();
-    let digest = Digest::try_from(digest)?;
+    let digest = Digest::try_from(&openssl::sha::sha256(&msg)[..])?;
     benchmark.push(("Hash", Instant::now()));
 
     let key_handle = load_signing_key(&mut context, use_key_context)?;
@@ -273,7 +272,7 @@ fn set_policy(context: &mut Context, session: PolicySession) -> Result<(), Error
         .build()?;
 
     let concatenated_pcr_values = fs::read("policy/pcr0.sha256")?;
-    let hashed_pcrs = Digest::try_from(openssl::sha::sha256(&concatenated_pcr_values).to_vec())?;
+    let hashed_pcrs = Digest::try_from(&openssl::sha::sha256(&concatenated_pcr_values)[..])?;
 
     context.policy_pcr(session, hashed_pcrs, pcr_selection_list)?;
 
