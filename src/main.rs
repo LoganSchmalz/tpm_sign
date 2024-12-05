@@ -11,7 +11,7 @@ use tss_esapi::{
         algorithm::{HashingAlgorithm, PublicAlgorithm},
         key_bits::RsaKeyBits,
         resource_handles::Hierarchy,
-        session_handles::{AuthSession, PolicySession},
+        session_handles::PolicySession,
     },
     structures::{
         Digest, HashScheme, HashcheckTicket, MaxBuffer, Nonce, PcrSelectionListBuilder, PcrSlot,
@@ -327,7 +327,25 @@ fn load_signing_key(context: &mut Context, use_key_context: bool) -> Result<KeyH
     }
 
     let old_session_handles = context.sessions();
-    let auth_session = create_basic_auth_session(context, SessionType::Hmac)?;
+
+    let auth_session = context
+        .start_auth_session(
+            None,
+            None,
+            None,
+            SessionType::Hmac,
+            SymmetricDefinition::AES_128_CFB,
+            HashingAlgorithm::Sha256,
+        )?
+        .ok_or(tss_esapi::Error::WrapperError(
+            tss_esapi::WrapperErrorKind::WrongValueFromTpm,
+        ))?;
+    let (session_attributes, session_attributes_mask) = SessionAttributesBuilder::new()
+        .with_decrypt(true)
+        .with_encrypt(true)
+        .build();
+    context.tr_sess_set_attributes(auth_session, session_attributes, session_attributes_mask)?;
+
     context.set_sessions((Some(auth_session), None, None));
     let primary_key_handle = create_primary_handle(context)?;
     let public = Public::unmarshall(fs::read("key.pub")?.get(2..).ok_or(Error::Slicing)?)?;
@@ -346,31 +364,6 @@ fn load_signing_key(context: &mut Context, use_key_context: bool) -> Result<KeyH
     }
 
     Ok(key_handle)
-}
-
-fn create_basic_auth_session(
-    context: &mut Context,
-    session_type: SessionType,
-) -> Result<AuthSession, Error> {
-    let auth_session = context
-        .start_auth_session(
-            None,
-            None,
-            None,
-            session_type,
-            SymmetricDefinition::AES_128_CFB,
-            HashingAlgorithm::Sha256,
-        )?
-        .ok_or(tss_esapi::Error::WrapperError(
-            tss_esapi::WrapperErrorKind::WrongValueFromTpm,
-        ))?;
-    let (session_attributes, session_attributes_mask) = SessionAttributesBuilder::new()
-        .with_decrypt(true)
-        .with_encrypt(true)
-        .build();
-    context.tr_sess_set_attributes(auth_session, session_attributes, session_attributes_mask)?;
-
-    Ok(auth_session)
 }
 
 fn create_primary_handle(context: &mut Context) -> Result<KeyHandle, Error> {
