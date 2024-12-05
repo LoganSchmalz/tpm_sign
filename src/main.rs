@@ -131,13 +131,7 @@ fn run(use_key_context: bool) -> Result<(), Error> {
     benchmark.push(("Context", Instant::now()));
 
     let approved_policy = Digest::try_from(fs::read("policy/pcr.policy_desired")?)?;
-    let policy_digest = context
-        .hash(
-            MaxBuffer::try_from(approved_policy.value())?,
-            HashingAlgorithm::Sha256,
-            Hierarchy::Null,
-        )?
-        .0;
+    let policy_digest = Digest::try_from(openssl::sha::sha256(&approved_policy).to_vec())?;
     benchmark.push(("Policy Digest", Instant::now()));
 
     let session = context
