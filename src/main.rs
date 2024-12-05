@@ -278,22 +278,8 @@ fn set_policy(context: &mut Context, session: PolicySession) -> Result<(), Error
         .with_selection(HashingAlgorithm::Sha256, &[PcrSlot::Slot0])
         .build()?;
 
-    let (_update_counter, _pcr_list_out, pcr_digests) =
-        context.pcr_read(pcr_selection_list.clone())?;
-    let concatenated_pcr_values = pcr_digests
-        .value()
-        .iter()
-        .map(Digest::value)
-        .collect::<Vec<&[u8]>>()
-        .concat();
-
-    let hashed_pcrs = context
-        .hash(
-            MaxBuffer::try_from(concatenated_pcr_values)?,
-            HashingAlgorithm::Sha256,
-            Hierarchy::Null,
-        )?
-        .0;
+    let concatenated_pcr_values = fs::read("policy/pcr0.sha256")?;
+    let hashed_pcrs = Digest::try_from(openssl::sha::sha256(&concatenated_pcr_values).to_vec())?;
 
     context.policy_pcr(session, hashed_pcrs, pcr_selection_list)?;
 
