@@ -227,7 +227,6 @@ fn run(use_key_context: bool) -> Result<(), Error> {
     // executing without a session is fastest and allowed for verifying
     //let verified_data = context
     //    .execute_without_session(|ctx| ctx.verify_signature(key_handle, digest, signature.clone()));
-    benchmark.push(("Verify", Instant::now()));
 
     {
         #![expect(clippy::unwrap_used)]
@@ -248,6 +247,7 @@ fn run(use_key_context: bool) -> Result<(), Error> {
         println!("{res}");
         assert!(res);
     }
+    benchmark.push(("Verify", Instant::now()));
 
     {
         #![allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
