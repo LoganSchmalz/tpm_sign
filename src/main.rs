@@ -213,8 +213,6 @@ fn run(policy_path: &str, use_key_context: bool) -> Result<(), Error> {
     //    .execute_without_session(|ctx| ctx.verify_signature(key_handle, digest, signature.clone()));
 
     {
-        #![expect(clippy::unwrap_used)]
-        #![expect(clippy::panic)]
         let pkey = openssl::pkey::PKey::public_key_from_pem(&fs::read("key.pem").expect("Could not read key.pem")).unwrap();
         let signature = match signature {
             Signature::RsaSsa(sig) | Signature::RsaPss(sig) => sig.signature().value().to_vec(),
