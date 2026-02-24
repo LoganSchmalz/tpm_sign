@@ -7,10 +7,9 @@ use tss_esapi::{
         SessionType,
         tss::{TPM2_RH_NULL, TPM2_ST_HASHCHECK},
     },
-    handles::{KeyHandle, ObjectHandle, PersistentTpmHandle, TpmHandle},
+    handles::{KeyHandle, ObjectHandle},
     interface_types::{
         algorithm::{HashingAlgorithm, PublicAlgorithm},
-        dynamic_handles::Persistent,
         key_bits::RsaKeyBits,
         resource_handles::Hierarchy,
         session_handles::PolicySession,
@@ -322,6 +321,7 @@ fn load_policy_key(context: &mut Context, use_key_context: bool) -> Result<KeyHa
 
 fn load_signing_key(context: &mut Context, use_key_context: bool) -> Result<KeyHandle, Error> {
     // if you want to load the key from a persistent location, this is how to do it:
+    // use tss_esapi::handles::{TpmHandle, PersistentTpmHandle};
     // if let Ok(key_handle) = context.execute_without_session(|context| {
     //     context.tr_from_tpm_public(TpmHandle::Persistent(
     //         PersistentTpmHandle::new(0x81000000u32)?,
