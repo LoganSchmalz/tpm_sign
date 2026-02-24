@@ -7,9 +7,10 @@ use tss_esapi::{
         SessionType,
         tss::{TPM2_RH_NULL, TPM2_ST_HASHCHECK},
     },
-    handles::{KeyHandle, ObjectHandle},
+    handles::{KeyHandle, ObjectHandle, PersistentTpmHandle, TpmHandle},
     interface_types::{
         algorithm::{HashingAlgorithm, PublicAlgorithm},
+        dynamic_handles::Persistent,
         key_bits::RsaKeyBits,
         resource_handles::Hierarchy,
         session_handles::PolicySession,
@@ -129,7 +130,9 @@ fn run(policy_path: &str, use_key_context: bool) -> Result<(), Error> {
     let mut context = Context::new(TctiNameConf::from_environment_variable()?)?;
     benchmark.push(("Context", Instant::now()));
 
-    let approved_policy = Digest::try_from(fs::read(policy_path).unwrap_or_else(|_| panic!("Could not read {}", policy_path)))?;
+    let approved_policy = Digest::try_from(
+        fs::read(policy_path).unwrap_or_else(|_| panic!("Could not read {}", policy_path)),
+    )?;
     let policy_digest = Digest::try_from(&openssl::sha::sha256(&approved_policy)[..])?;
     benchmark.push(("Policy Digest", Instant::now()));
 
@@ -159,7 +162,9 @@ fn run(policy_path: &str, use_key_context: bool) -> Result<(), Error> {
 
     let policy_signature = Signature::RsaSsa(RsaSignature::create(
         HashingAlgorithm::Sha256,
-        PublicKeyRsa::try_from(fs::read("policy/pcr.signature").expect("Could not read policy/pcr.signature"))?,
+        PublicKeyRsa::try_from(
+            fs::read("policy/pcr.signature").expect("Could not read policy/pcr.signature"),
+        )?,
     )?);
     let check_ticket =
         context.verify_signature(policy_key_handle, policy_digest, policy_signature)?;
@@ -187,7 +192,9 @@ fn run(policy_path: &str, use_key_context: bool) -> Result<(), Error> {
     let digest = Digest::try_from(&openssl::sha::sha256(&msg)[..])?;
     benchmark.push(("Hash", Instant::now()));
 
-    let key_handle = load_signing_key(&mut context, use_key_context)?;
+    let key_handle = load_signing_key(&mut context, use_key_context);
+    let key_handle = key_handle?;
+
     benchmark.push(("Signing Key", Instant::now()));
 
     let signature = context.execute_with_session(Some(session), |context| {
@@ -213,7 +220,10 @@ fn run(policy_path: &str, use_key_context: bool) -> Result<(), Error> {
     //    .execute_without_session(|ctx| ctx.verify_signature(key_handle, digest, signature.clone()));
 
     {
-        let pkey = openssl::pkey::PKey::public_key_from_pem(&fs::read("key.pem").expect("Could not read key.pem")).unwrap();
+        let pkey = openssl::pkey::PKey::public_key_from_pem(
+            &fs::read("key.pem").expect("Could not read key.pem"),
+        )
+        .unwrap();
         let signature = match signature {
             Signature::RsaSsa(sig) | Signature::RsaPss(sig) => sig.signature().value().to_vec(),
             _ => {
@@ -311,6 +321,16 @@ fn load_policy_key(context: &mut Context, use_key_context: bool) -> Result<KeyHa
 }
 
 fn load_signing_key(context: &mut Context, use_key_context: bool) -> Result<KeyHandle, Error> {
+    // if you want to load the key from a persistent location, this is how to do it:
+    // if let Ok(key_handle) = context.execute_without_session(|context| {
+    //     context.tr_from_tpm_public(TpmHandle::Persistent(
+    //         PersistentTpmHandle::new(0x81000000u32)?,
+    //     ))
+    // }) {
+    //     return Ok(key_handle.into());
+    // }
+
+
     if use_key_context
         && let Ok(key_handle) = reload_key_context(context, env::temp_dir().join("signing.ctx"))
     {
@@ -339,8 +359,18 @@ fn load_signing_key(context: &mut Context, use_key_context: bool) -> Result<KeyH
 
     context.set_sessions((Some(auth_session), None, None));
     let primary_key_handle = create_primary_handle(context)?;
-    let public = Public::unmarshall(fs::read("key.pub").expect("Could not read key.pub").get(2..).ok_or(Error::Slicing)?)?;
-    let private = Private::try_from(fs::read("key.priv").expect("Could not read key.priv").get(2..).ok_or(Error::Slicing)?)?;
+    let public = Public::unmarshall(
+        fs::read("key.pub")
+            .expect("Could not read key.pub")
+            .get(2..)
+            .ok_or(Error::Slicing)?,
+    )?;
+    let private = Private::try_from(
+        fs::read("key.priv")
+            .expect("Could not read key.priv")
+            .get(2..)
+            .ok_or(Error::Slicing)?,
+    )?;
     let key_handle = context.load(primary_key_handle, private, public)?;
     // primary_key_handle is no longer necessary and keeping it loaded slows things down
     context.flush_context(primary_key_handle.into())?;
@@ -388,6 +418,9 @@ fn main() -> Result<(), Error> {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.len() {
         1 => run(&args[0], true),
-        _ => panic!("Wrong number of arguments: 1 expected, {} provided", args.len()),
+        _ => panic!(
+            "Wrong number of arguments: 1 expected, {} provided",
+            args.len()
+        ),
     }
 }
