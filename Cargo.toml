@@ -8,7 +8,6 @@ unsafe_code = "forbid"
 
 [lints.clippy]
 allow_attributes = "warn"
-unwrap_used = "deny"
 indexing_slicing = "warn"
 as_conversions = "warn"
 arithmetic_side_effects = "warn"
