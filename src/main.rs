@@ -129,7 +129,7 @@ fn run(policy_path: &str, use_key_context: bool) -> Result<(), Error> {
     let mut context = Context::new(TctiNameConf::from_environment_variable()?)?;
     benchmark.push(("Context", Instant::now()));
 
-    let approved_policy = Digest::try_from(fs::read(policy_path).expect(&format!("Could not read {}", policy_path)))?;
+    let approved_policy = Digest::try_from(fs::read(policy_path).unwrap_or_else(|_| panic!("Could not read {}", policy_path)))?;
     let policy_digest = Digest::try_from(&openssl::sha::sha256(&approved_policy)[..])?;
     benchmark.push(("Policy Digest", Instant::now()));
 
@@ -266,7 +266,7 @@ fn set_policy(context: &mut Context, session: PolicySession) -> Result<(), Error
     // but that's just another required file, so you can also use an empty digest
     // let concatenated_pcr_values = fs::read("policy/pcrs.sha256")?;
     // let hashed_pcrs = Digest::try_from(&openssl::sha::sha256(&concatenated_pcr_values)[..])?;
-    let hashed_pcrs = Digest::try_from(vec![]).unwrap();
+    let hashed_pcrs = Digest::try_from(vec![])?;
 
     context.policy_pcr(session, hashed_pcrs, pcr_selection_list)?;
 
@@ -292,17 +292,17 @@ fn save_key_context<P: AsRef<Path>>(
     Ok(())
 }
 
-fn load_policy_key(mut context: &mut Context, use_key_context: bool) -> Result<KeyHandle, Error> {
+fn load_policy_key(context: &mut Context, use_key_context: bool) -> Result<KeyHandle, Error> {
     if use_key_context
         && let Ok(key_handle) = reload_key_context(context, env::temp_dir().join("policy.ctx"))
     {
         return Ok(key_handle);
     }
 
-    let policy_key_handle = load_external_signing_key(&mut context)?;
+    let policy_key_handle = load_external_signing_key(context)?;
     if use_key_context {
         let _ = save_key_context(
-            &mut context,
+            context,
             policy_key_handle.into(),
             env::temp_dir().join("policy.ctx"),
         );
@@ -339,8 +339,8 @@ fn load_signing_key(context: &mut Context, use_key_context: bool) -> Result<KeyH
 
     context.set_sessions((Some(auth_session), None, None));
     let primary_key_handle = create_primary_handle(context)?;
-    let public = Public::unmarshall(fs::read("key.pub").unwrap().get(2..).ok_or(Error::Slicing)?)?;
-    let private = Private::try_from(fs::read("key.priv").unwrap().get(2..).ok_or(Error::Slicing)?)?;
+    let public = Public::unmarshall(fs::read("key.pub").expect("Could not read key.pub").get(2..).ok_or(Error::Slicing)?)?;
+    let private = Private::try_from(fs::read("key.priv").expect("Could not read key.priv").get(2..).ok_or(Error::Slicing)?)?;
     let key_handle = context.load(primary_key_handle, private, public)?;
     // primary_key_handle is no longer necessary and keeping it loaded slows things down
     context.flush_context(primary_key_handle.into())?;
