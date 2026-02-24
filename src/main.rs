@@ -1,10 +1,11 @@
 use std::{fs, io, path::Path};
 
 use tss_esapi::{
+    Context, TctiNameConf,
     attributes::{ObjectAttributesBuilder, SessionAttributesBuilder},
     constants::{
-        tss::{TPM2_RH_NULL, TPM2_ST_HASHCHECK},
         SessionType,
+        tss::{TPM2_RH_NULL, TPM2_ST_HASHCHECK},
     },
     handles::{KeyHandle, ObjectHandle},
     interface_types::{
@@ -21,7 +22,6 @@ use tss_esapi::{
     },
     traits::UnMarshall,
     tss2_esys::TPMT_TK_HASHCHECK,
-    Context, TctiNameConf,
 };
 
 use std::convert::TryFrom;
@@ -124,13 +124,12 @@ fn load_external_signing_key(context: &mut Context) -> Result<KeyHandle, Error> 
     Ok(policy_key_handle)
 }
 
-#[deny(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-fn run(use_key_context: bool) -> Result<(), Error> {
+fn run(policy_path: &str, use_key_context: bool) -> Result<(), Error> {
     let mut benchmark = vec![("", Instant::now())];
     let mut context = Context::new(TctiNameConf::from_environment_variable()?)?;
     benchmark.push(("Context", Instant::now()));
 
-    let approved_policy = Digest::try_from(fs::read("policy/pcr.policy_desired")?)?;
+    let approved_policy = Digest::try_from(fs::read(policy_path).expect(&format!("Could not read {}", policy_path)))?;
     let policy_digest = Digest::try_from(&openssl::sha::sha256(&approved_policy)[..])?;
     benchmark.push(("Policy Digest", Instant::now()));
 
@@ -154,28 +153,13 @@ fn run(use_key_context: bool) -> Result<(), Error> {
     let policy_session: PolicySession = session.try_into()?;
     set_policy(&mut context, policy_session)?;
 
-    let policy_key_handle = if use_key_context {
-        if let Ok(key_handle) = reload_key_context(&mut context, env::temp_dir().join("policy.ctx"))
-        {
-            key_handle
-        } else {
-            let policy_key_handle = load_external_signing_key(&mut context)?;
-            let _ = save_key_context(
-                &mut context,
-                policy_key_handle.into(),
-                env::temp_dir().join("policy.ctx"),
-            );
-            policy_key_handle
-        }
-    } else {
-        load_external_signing_key(&mut context)?
-    };
+    let policy_key_handle = load_policy_key(&mut context, use_key_context)?;
     let key_sign = context.tr_get_name(policy_key_handle.into())?;
     benchmark.push(("Policy Key", Instant::now()));
 
     let policy_signature = Signature::RsaSsa(RsaSignature::create(
         HashingAlgorithm::Sha256,
-        PublicKeyRsa::try_from(fs::read("policy/pcr.signature")?)?,
+        PublicKeyRsa::try_from(fs::read("policy/pcr.signature").expect("Could not read policy/pcr.signature"))?,
     )?);
     let check_ticket =
         context.verify_signature(policy_key_handle, policy_digest, policy_signature)?;
@@ -231,7 +215,7 @@ fn run(use_key_context: bool) -> Result<(), Error> {
     {
         #![expect(clippy::unwrap_used)]
         #![expect(clippy::panic)]
-        let pkey = openssl::pkey::PKey::public_key_from_pem(&fs::read("key.pem")?).unwrap();
+        let pkey = openssl::pkey::PKey::public_key_from_pem(&fs::read("key.pem").expect("Could not read key.pem")).unwrap();
         let signature = match signature {
             Signature::RsaSsa(sig) | Signature::RsaPss(sig) => sig.signature().value().to_vec(),
             _ => {
@@ -268,11 +252,23 @@ fn run(use_key_context: bool) -> Result<(), Error> {
 
 fn set_policy(context: &mut Context, session: PolicySession) -> Result<(), Error> {
     let pcr_selection_list = PcrSelectionListBuilder::new()
-        .with_selection(HashingAlgorithm::Sha256, &[PcrSlot::Slot0])
+        .with_selection(
+            HashingAlgorithm::Sha256,
+            &[
+                PcrSlot::Slot7,  // ensures ima enforce is enabled
+                PcrSlot::Slot8, // should measure to make sure selinux not disabled, and check which default ima policies are enabled
+                PcrSlot::Slot9, // boot files
+                PcrSlot::Slot11, // custom init and ima/selinux policy measurements
+                PcrSlot::Slot14, // mok certificates
+            ],
+        )
         .build()?;
 
-    let concatenated_pcr_values = fs::read("policy/pcr0.sha256")?;
-    let hashed_pcrs = Digest::try_from(&openssl::sha::sha256(&concatenated_pcr_values)[..])?;
+    // optionally, a pcr digest can be provided to short-circuit failure before the policy gets checked
+    // but that's just another required file, so you can also use an empty digest
+    // let concatenated_pcr_values = fs::read("policy/pcrs.sha256")?;
+    // let hashed_pcrs = Digest::try_from(&openssl::sha::sha256(&concatenated_pcr_values)[..])?;
+    let hashed_pcrs = Digest::try_from(vec![]).unwrap();
 
     context.policy_pcr(session, hashed_pcrs, pcr_selection_list)?;
 
@@ -298,11 +294,29 @@ fn save_key_context<P: AsRef<Path>>(
     Ok(())
 }
 
-fn load_signing_key(context: &mut Context, use_key_context: bool) -> Result<KeyHandle, Error> {
+fn load_policy_key(mut context: &mut Context, use_key_context: bool) -> Result<KeyHandle, Error> {
+    if use_key_context
+        && let Ok(key_handle) = reload_key_context(context, env::temp_dir().join("policy.ctx"))
+    {
+        return Ok(key_handle);
+    }
+
+    let policy_key_handle = load_external_signing_key(&mut context)?;
     if use_key_context {
-        if let Ok(key_handle) = reload_key_context(context, env::temp_dir().join("signing.ctx")) {
-            return Ok(key_handle);
-        }
+        let _ = save_key_context(
+            &mut context,
+            policy_key_handle.into(),
+            env::temp_dir().join("policy.ctx"),
+        );
+    }
+    Ok(policy_key_handle)
+}
+
+fn load_signing_key(context: &mut Context, use_key_context: bool) -> Result<KeyHandle, Error> {
+    if use_key_context
+        && let Ok(key_handle) = reload_key_context(context, env::temp_dir().join("signing.ctx"))
+    {
+        return Ok(key_handle);
     }
 
     let old_session_handles = context.sessions();
@@ -327,8 +341,8 @@ fn load_signing_key(context: &mut Context, use_key_context: bool) -> Result<KeyH
 
     context.set_sessions((Some(auth_session), None, None));
     let primary_key_handle = create_primary_handle(context)?;
-    let public = Public::unmarshall(fs::read("key.pub")?.get(2..).ok_or(Error::Slicing)?)?;
-    let private = Private::try_from(fs::read("key.priv")?.get(2..).ok_or(Error::Slicing)?)?;
+    let public = Public::unmarshall(fs::read("key.pub").unwrap().get(2..).ok_or(Error::Slicing)?)?;
+    let private = Private::try_from(fs::read("key.priv").unwrap().get(2..).ok_or(Error::Slicing)?)?;
     let key_handle = context.load(primary_key_handle, private, public)?;
     // primary_key_handle is no longer necessary and keeping it loaded slows things down
     context.flush_context(primary_key_handle.into())?;
@@ -375,7 +389,7 @@ fn main() -> Result<(), Error> {
     #![expect(clippy::panic)]
     let args: Vec<String> = env::args().skip(1).collect();
     match args.len() {
-        0 => run(true),
-        _ => panic!("Too many arguments: 0 expected, {} provided", args.len()),
+        1 => run(&args[0], true),
+        _ => panic!("Wrong number of arguments: 1 expected, {} provided", args.len()),
     }
 }
